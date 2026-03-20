@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/eleemhuis/firmware_scan_service/internal/model"
-	"github.com/eleemhuis/firmware_scan_service/internal/queue"
+	"firmware-scan-service/internal/model"
+	"firmware-scan-service/internal/queue"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"

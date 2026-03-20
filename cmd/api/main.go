@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/eleemhuis/firmware_scan_service/internal/config"
-	"github.com/eleemhuis/firmware_scan_service/internal/db"
-	"github.com/eleemhuis/firmware_scan_service/internal/handler"
-	"github.com/eleemhuis/firmware_scan_service/internal/queue"
+	"firmware-scan-service/internal/config"
+	"firmware-scan-service/internal/db"
+	"firmware-scan-service/internal/handler"
+	"firmware-scan-service/internal/queue"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )

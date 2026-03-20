@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/eleemhuis/firmware_scan_service/internal/service"
+	"firmware-scan-service/internal/service"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

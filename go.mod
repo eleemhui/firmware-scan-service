@@ -1,4 +1,4 @@
-module github.com/eleemhuis/firmware_scan_service
+module firmware-scan-service
 
 go 1.22
 

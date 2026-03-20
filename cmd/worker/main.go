@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/eleemhuis/firmware_scan_service/internal/config"
-	"github.com/eleemhuis/firmware_scan_service/internal/db"
-	"github.com/eleemhuis/firmware_scan_service/internal/model"
-	"github.com/eleemhuis/firmware_scan_service/internal/queue"
-	"github.com/eleemhuis/firmware_scan_service/internal/service"
+	"firmware-scan-service/internal/config"
+	"firmware-scan-service/internal/db"
+	"firmware-scan-service/internal/model"
+	"firmware-scan-service/internal/queue"
+	"firmware-scan-service/internal/service"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
