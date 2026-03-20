@@ -1,0 +1,89 @@
+services:
+
+  # ── PostgreSQL primary (accepts writes) ──────────────────────────────────────
+  postgres-primary:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: firmware
+      POSTGRES_PASSWORD: firmware_pass
+      POSTGRES_DB: firmware_db
+    volumes:
+      - postgres_primary_data:/var/lib/postgresql/data
+      - ./scripts/init-primary.sh:/docker-entrypoint-initdb.d/init-primary.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U firmware -d firmware_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ── PostgreSQL replica (streaming replication from primary) ──────────────────
+  postgres-replica:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: firmware
+      POSTGRES_PASSWORD: firmware_pass
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql/data
+      - ./scripts/start-replica.sh:/start-replica.sh:ro
+    user: postgres
+    entrypoint: ["/bin/bash", "/start-replica.sh"]
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+
+  # ── RabbitMQ ─────────────────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # management UI: http://localhost:15672 (guest/guest)
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ── firmware_scan_service (REST API) ─────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://firmware:firmware_pass@postgres-primary:5432/firmware_db
+      AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      PORT: "8080"
+      QUEUE_NAME: firmware_scan_jobs
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+
+  # ── firmware_analysis_service (worker / queue consumer) ─────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      DATABASE_URL: postgres://firmware:firmware_pass@postgres-primary:5432/firmware_db
+      AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      QUEUE_NAME: firmware_scan_jobs
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  postgres_primary_data:
+  postgres_replica_data:

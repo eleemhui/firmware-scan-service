@@ -1,0 +1,21 @@
+# Stage 1: build
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /firmware_analysis_service ./cmd/worker
+
+# Stage 2: runtime
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+
+COPY --from=builder /firmware_analysis_service /app/firmware_analysis_service
+
+ENTRYPOINT ["/app/firmware_analysis_service"]
