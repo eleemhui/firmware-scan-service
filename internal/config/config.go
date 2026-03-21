@@ -6,16 +6,17 @@ import (
 )
 
 type Config struct {
-	Port      string
-	DatabaseURL string
-	AMQPUrl   string
-	QueueName string
+	Port        string
+	MongoURI    string
+	MongoDBName string
+	AMQPUrl     string
+	QueueName   string
 }
 
 func Load() (*Config, error) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		return nil, errors.New("DATABASE_URL is required")
+	mongoURI := os.Getenv("MONGO_URI")
+	if mongoURI == "" {
+		return nil, errors.New("MONGO_URI is required")
 	}
 
 	amqpURL := os.Getenv("AMQP_URL")
@@ -28,6 +29,11 @@ func Load() (*Config, error) {
 		port = "8080"
 	}
 
+	dbName := os.Getenv("MONGO_DB")
+	if dbName == "" {
+		dbName = "firmware_db"
+	}
+
 	queue := os.Getenv("QUEUE_NAME")
 	if queue == "" {
 		queue = "firmware_scan_jobs"
@@ -35,7 +41,8 @@ func Load() (*Config, error) {
 
 	return &Config{
 		Port:        port,
-		DatabaseURL: dbURL,
+		MongoURI:    mongoURI,
+		MongoDBName: dbName,
 		AMQPUrl:     amqpURL,
 		QueueName:   queue,
 	}, nil

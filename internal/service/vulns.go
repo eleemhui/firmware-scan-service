@@ -3,66 +3,48 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 
-	"firmware-scan-service/internal/model"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// AddVulns inserts CVE IDs into the registry, ignoring duplicates.
-// Uses a pgx Batch to send all inserts in a single round-trip.
-// PostgreSQL's UNIQUE constraint on cve_id serializes concurrent writes
-// across all replicas, preventing race conditions and duplicates.
-func AddVulns(ctx context.Context, pool *pgxpool.Pool, cveIDs []string) ([]model.Vuln, error) {
-	if len(cveIDs) == 0 {
-		return ListVulns(ctx, pool)
-	}
+// vulnerabilities collection uses a single document {_id: "global", cve_ids: [...]}
+// $addToSet ensures uniqueness atomically across all replicas — no separate
+// unique index or application-level deduplication needed.
 
-	batch := &pgx.Batch{}
-	for _, id := range cveIDs {
-		batch.Queue(
-			`INSERT INTO vulnerabilities (cve_id) VALUES ($1) ON CONFLICT (cve_id) DO NOTHING`,
-			id,
-		)
-	}
+const vulnsDocID = "global"
 
-	results := pool.SendBatch(ctx, batch)
-	for range cveIDs {
-		if _, err := results.Exec(); err != nil {
-			results.Close()
-			return nil, fmt.Errorf("insert vuln: %w", err)
-		}
+// AddVulns appends CVE IDs to the global registry, ignoring duplicates.
+func AddVulns(ctx context.Context, database *mongo.Database, cveIDs []string) ([]string, error) {
+	coll := database.Collection("vulnerabilities")
+	_, err := coll.UpdateOne(
+		ctx,
+		bson.M{"_id": vulnsDocID},
+		bson.M{"$addToSet": bson.M{"cve_ids": bson.M{"$each": cveIDs}}},
+		options.Update().SetUpsert(true),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("add vulns: %w", err)
 	}
-	if err := results.Close(); err != nil {
-		return nil, fmt.Errorf("close batch: %w", err)
-	}
-
-	return ListVulns(ctx, pool)
+	return ListVulns(ctx, database)
 }
 
-// ListVulns returns all unique CVE IDs ordered by insertion time.
-func ListVulns(ctx context.Context, pool *pgxpool.Pool) ([]model.Vuln, error) {
-	rows, err := pool.Query(ctx,
-		`SELECT id, cve_id, created_at FROM vulnerabilities ORDER BY created_at ASC`)
+// ListVulns returns all unique CVE IDs in sorted order.
+func ListVulns(ctx context.Context, database *mongo.Database) ([]string, error) {
+	var doc struct {
+		CveIDs []string `bson:"cve_ids"`
+	}
+	err := database.Collection("vulnerabilities").
+		FindOne(ctx, bson.M{"_id": vulnsDocID}).
+		Decode(&doc)
+	if err == mongo.ErrNoDocuments {
+		return []string{}, nil
+	}
 	if err != nil {
-		return nil, fmt.Errorf("query vulns: %w", err)
+		return nil, fmt.Errorf("list vulns: %w", err)
 	}
-	defer rows.Close()
-
-	var vulns []model.Vuln
-	for rows.Next() {
-		var v model.Vuln
-		if err := rows.Scan(&v.ID, &v.CveID, &v.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan vuln: %w", err)
-		}
-		vulns = append(vulns, v)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	if vulns == nil {
-		vulns = []model.Vuln{}
-	}
-	return vulns, nil
+	sort.Strings(doc.CveIDs)
+	return doc.CveIDs, nil
 }

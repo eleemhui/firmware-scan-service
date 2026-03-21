@@ -3,65 +3,35 @@ package db
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+func NewClient(ctx context.Context, uri string) (*mongo.Client, error) {
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
 	if err != nil {
-		return nil, fmt.Errorf("create pool: %w", err)
+		return nil, fmt.Errorf("connect: %w", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
+	if err := client.Ping(ctx, nil); err != nil {
+		_ = client.Disconnect(ctx)
+		return nil, fmt.Errorf("ping: %w", err)
 	}
-	return pool, nil
+	return client, nil
 }
 
-// RunMigrations reads all .sql files from the migrations directory (relative to
-// the current working directory) and executes them in lexicographic order.
-// Each file is wrapped in a transaction so a partial failure is rolled back.
-func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
-	migrationsDir := "migrations"
-
-	entries, err := os.ReadDir(migrationsDir)
+// CreateIndexes creates all required indexes. Safe to call on every startup —
+// MongoDB ignores requests to create indexes that already exist.
+func CreateIndexes(ctx context.Context, database *mongo.Database) error {
+	// firmware_scans: unique index on (device_id, binary_hash) enforces
+	// idempotency — exactly one scan per device/firmware-hash pair.
+	_, err := database.Collection("firmware_scans").Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "device_id", Value: 1}, {Key: "binary_hash", Value: 1}},
+		Options: options.Index().SetUnique(true).SetName("uq_device_hash"),
+	})
 	if err != nil {
-		return fmt.Errorf("read migrations dir: %w", err)
+		return fmt.Errorf("create firmware_scans index: %w", err)
 	}
-
-	var files []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
-			files = append(files, filepath.Join(migrationsDir, e.Name()))
-		}
-	}
-	sort.Strings(files)
-
-	for _, f := range files {
-		sql, err := os.ReadFile(f)
-		if err != nil {
-			return fmt.Errorf("read migration %s: %w", f, err)
-		}
-
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			return fmt.Errorf("begin tx for %s: %w", f, err)
-		}
-
-		if _, err := tx.Exec(ctx, string(sql)); err != nil {
-			_ = tx.Rollback(ctx)
-			return fmt.Errorf("execute migration %s: %w", f, err)
-		}
-
-		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit migration %s: %w", f, err)
-		}
-	}
-
 	return nil
 }

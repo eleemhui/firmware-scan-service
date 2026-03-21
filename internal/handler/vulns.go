@@ -5,7 +5,8 @@ import (
 	"net/http"
 
 	"firmware-scan-service/internal/service"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type vulnsRequest struct {
@@ -17,7 +18,7 @@ type vulnsResponse struct {
 }
 
 // NewAddVulnsHandler returns a handler for PATCH /v1/findings/vulns.
-func NewAddVulnsHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func NewAddVulnsHandler(database *mongo.Database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req vulnsRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -29,32 +30,22 @@ func NewAddVulnsHandler(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		vulns, err := service.AddVulns(r.Context(), pool, req.Vulns)
+		ids, err := service.AddVulns(r.Context(), database, req.Vulns)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to add vulns")
 			return
-		}
-
-		ids := make([]string, len(vulns))
-		for i, v := range vulns {
-			ids[i] = v.CveID
 		}
 		writeJSON(w, http.StatusOK, vulnsResponse{Vulns: ids})
 	}
 }
 
 // NewListVulnsHandler returns a handler for GET /v1/findings/vulns.
-func NewListVulnsHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func NewListVulnsHandler(database *mongo.Database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		vulns, err := service.ListVulns(r.Context(), pool)
+		ids, err := service.ListVulns(r.Context(), database)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list vulns")
 			return
-		}
-
-		ids := make([]string, len(vulns))
-		for i, v := range vulns {
-			ids[i] = v.CveID
 		}
 		writeJSON(w, http.StatusOK, vulnsResponse{Vulns: ids})
 	}

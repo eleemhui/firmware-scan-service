@@ -13,6 +13,7 @@ import (
 	"firmware-scan-service/internal/db"
 	"firmware-scan-service/internal/handler"
 	"firmware-scan-service/internal/queue"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -26,16 +27,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
+	client, err := db.NewClient(ctx, cfg.MongoURI)
 	if err != nil {
-		log.Fatalf("connect to database: %v", err)
+		log.Fatalf("connect to mongodb: %v", err)
 	}
-	defer pool.Close()
+	defer client.Disconnect(ctx)
 
-	if err := db.RunMigrations(ctx, pool); err != nil {
-		log.Fatalf("run migrations: %v", err)
+	database := client.Database(cfg.MongoDBName)
+
+	if err := db.CreateIndexes(ctx, database); err != nil {
+		log.Fatalf("create indexes: %v", err)
 	}
-	log.Println("migrations applied")
+	log.Println("indexes ready")
 
 	pub, err := queue.NewPublisher(cfg.AMQPUrl, cfg.QueueName)
 	if err != nil {
@@ -48,9 +51,9 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 
-	r.Post("/v1/firmware-scans", handler.NewScanHandler(pool, pub))
-	r.Patch("/v1/findings/vulns", handler.NewAddVulnsHandler(pool))
-	r.Get("/v1/findings/vulns", handler.NewListVulnsHandler(pool))
+	r.Post("/v1/firmware-scans", handler.NewScanHandler(database, pub))
+	r.Patch("/v1/findings/vulns", handler.NewAddVulnsHandler(database))
+	r.Get("/v1/findings/vulns", handler.NewListVulnsHandler(database))
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

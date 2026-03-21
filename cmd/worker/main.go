@@ -15,13 +15,11 @@ import (
 	"firmware-scan-service/internal/model"
 	"firmware-scan-service/internal/queue"
 	"firmware-scan-service/internal/service"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
-// staleThreshold is how long a scan can stay in 'started' before the watchdog
-// re-enqueues it. Should be longer than the maximum expected scan duration.
-const staleThreshold = "5 minutes"
+const staleThreshold = 5 * time.Minute
 
 func main() {
 	cfg, err := config.Load()
@@ -32,11 +30,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
+	client, err := db.NewClient(ctx, cfg.MongoURI)
 	if err != nil {
-		log.Fatalf("connect to database: %v", err)
+		log.Fatalf("connect to mongodb: %v", err)
 	}
-	defer pool.Close()
+	defer client.Disconnect(ctx)
+
+	database := client.Database(cfg.MongoDBName)
 
 	consumer, err := queue.NewConsumer(cfg.AMQPUrl, cfg.QueueName)
 	if err != nil {
@@ -50,12 +50,11 @@ func main() {
 	}
 	defer pub.Close()
 
-	// Watchdog: periodically re-enqueue scans stuck in 'started'.
-	go runWatchdog(ctx, pool, pub)
+	go runWatchdog(ctx, database, pub)
 
 	log.Println("firmware_analysis_service started, waiting for jobs...")
 
-	if err := consumer.Consume(ctx, makeHandler(pool)); err != nil {
+	if err := consumer.Consume(ctx, makeHandler(database)); err != nil {
 		if ctx.Err() == nil {
 			log.Fatalf("consumer error: %v", err)
 		}
@@ -63,36 +62,32 @@ func main() {
 	}
 }
 
-func makeHandler(pool *pgxpool.Pool) func([]byte) error {
+func makeHandler(database *mongo.Database) func([]byte) error {
 	return func(body []byte) error {
 		var msg model.ScanJobMessage
 		if err := json.Unmarshal(body, &msg); err != nil {
 			return fmt.Errorf("unmarshal message: %w", err)
 		}
-		return processScan(context.Background(), pool, msg.ScanID)
+		return processScan(context.Background(), database, msg.ScanID)
 	}
 }
 
-// processScan claims the scan with a conditional UPDATE (scheduled → started).
-// If another worker already claimed it the call is a no-op — the message is
-// acked without duplicate processing.
-func processScan(ctx context.Context, pool *pgxpool.Pool, scanID uuid.UUID) error {
-	claimed, err := service.ClaimScan(ctx, pool, scanID)
+func processScan(ctx context.Context, database *mongo.Database, scanID string) error {
+	claimed, err := service.ClaimScan(ctx, database, scanID)
 	if err != nil {
 		return fmt.Errorf("claim scan: %w", err)
 	}
 	if !claimed {
 		log.Printf("scan %s: already claimed or complete, skipping", scanID)
-		return nil // ack — nothing left to do
+		return nil
 	}
 
 	log.Printf("scan %s: claimed, analysing...", scanID)
 
-	// Simulate firmware analysis (2–5 seconds).
 	duration := time.Duration(2+rand.Intn(4)) * time.Second
 	time.Sleep(duration)
 
-	if err := service.CompleteScan(ctx, pool, scanID); err != nil {
+	if err := service.CompleteScan(ctx, database, scanID); err != nil {
 		return fmt.Errorf("set complete: %w", err)
 	}
 
@@ -100,18 +95,14 @@ func processScan(ctx context.Context, pool *pgxpool.Pool, scanID uuid.UUID) erro
 	return nil
 }
 
-// runWatchdog periodically finds scans stuck in 'started' beyond staleThreshold,
-// resets them to 'scheduled', and re-publishes them to the queue.
-// Multiple worker replicas will each run this watchdog; the conditional UPDATE
-// in RequeueStaleScan means each stale scan is only claimed by one replica.
-func runWatchdog(ctx context.Context, pool *pgxpool.Pool, pub *queue.Publisher) {
+func runWatchdog(ctx context.Context, database *mongo.Database, pub *queue.Publisher) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			ids, err := service.RequeueStaleScan(ctx, pool, staleThreshold)
+			ids, err := service.RequeueStaleScan(ctx, database, staleThreshold)
 			if err != nil {
 				log.Printf("watchdog: requeue error: %v", err)
 				continue

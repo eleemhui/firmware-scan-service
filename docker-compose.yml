@@ -1,38 +1,50 @@
 services:
 
-  # ── PostgreSQL primary (accepts writes) ──────────────────────────────────────
-  postgres-primary:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: firmware
-      POSTGRES_PASSWORD: firmware_pass
-      POSTGRES_DB: firmware_db
+  # ── MongoDB primary ───────────────────────────────────────────────────────────
+  mongo-primary:
+    image: mongo:7
+    entrypoint: ["/bin/bash", "/scripts/mongod-filter.sh"]
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     volumes:
-      - postgres_primary_data:/var/lib/postgresql/data
-      - ./scripts/init-primary.sh:/docker-entrypoint-initdb.d/init-primary.sh:ro
+      - mongo_primary_data:/data/db
+      - ./scripts/mongod-filter.sh:/scripts/mongod-filter.sh:ro
     ports:
-      - "5432:5432"
+      - "27017:27017"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U firmware -d firmware_db"]
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
       timeout: 5s
       retries: 12
 
-  # ── PostgreSQL replica (streaming replication from primary) ──────────────────
-  postgres-replica:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: firmware
-      POSTGRES_PASSWORD: firmware_pass
-      PGDATA: /var/lib/postgresql/data/pgdata
+  # ── MongoDB secondary (streaming replication from primary) ───────────────────
+  mongo-secondary:
+    image: mongo:7
+    entrypoint: ["/bin/bash", "/scripts/mongod-filter.sh"]
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     volumes:
-      - postgres_replica_data:/var/lib/postgresql/data
-      - ./scripts/start-replica.sh:/start-replica.sh:ro
-    user: postgres
-    entrypoint: ["/bin/bash", "/start-replica.sh"]
+      - mongo_secondary_data:/data/db
+      - ./scripts/mongod-filter.sh:/scripts/mongod-filter.sh:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     depends_on:
-      postgres-primary:
+      mongo-primary:
         condition: service_healthy
+
+  # ── Replica set initialisation (runs once, then exits) ───────────────────────
+  mongo-setup:
+    image: mongo:7
+    volumes:
+      - ./scripts/mongo-setup.sh:/mongo-setup.sh:ro
+    entrypoint: ["/bin/bash", "/mongo-setup.sh"]
+    depends_on:
+      mongo-primary:
+        condition: service_healthy
+      mongo-secondary:
+        condition: service_healthy
+    restart: on-failure
 
   # ── RabbitMQ ─────────────────────────────────────────────────────────────────
   rabbitmq:
@@ -57,13 +69,14 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DATABASE_URL: postgres://firmware:firmware_pass@postgres-primary:5432/firmware_db
+      MONGO_URI: mongodb://mongo-primary:27017,mongo-secondary:27017/?replicaSet=rs0&directConnection=false
+      MONGO_DB: firmware_db
       AMQP_URL: amqp://guest:guest@rabbitmq:5672/
       PORT: "8080"
       QUEUE_NAME: firmware_scan_jobs
     depends_on:
-      postgres-primary:
-        condition: service_healthy
+      mongo-setup:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
     restart: on-failure
@@ -74,16 +87,17 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     environment:
-      DATABASE_URL: postgres://firmware:firmware_pass@postgres-primary:5432/firmware_db
+      MONGO_URI: mongodb://mongo-primary:27017,mongo-secondary:27017/?replicaSet=rs0&directConnection=false
+      MONGO_DB: firmware_db
       AMQP_URL: amqp://guest:guest@rabbitmq:5672/
       QUEUE_NAME: firmware_scan_jobs
     depends_on:
-      postgres-primary:
-        condition: service_healthy
+      mongo-setup:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
     restart: on-failure
 
 volumes:
-  postgres_primary_data:
-  postgres_replica_data:
+  mongo_primary_data:
+  mongo_secondary_data:

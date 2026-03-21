@@ -17,8 +17,6 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /app
 
 COPY --from=builder /firmware_scan_service /app/firmware_scan_service
-# Migrations are read from the filesystem at startup
-COPY migrations/ /app/migrations/
 
 EXPOSE 8080
 

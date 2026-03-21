@@ -6,18 +6,19 @@ import (
 
 	"firmware-scan-service/internal/queue"
 	"firmware-scan-service/internal/service"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type registerScanRequest struct {
-	DeviceID        string          `json:"device_id"`
-	FirmwareVersion string          `json:"firmware_version"`
-	BinaryHash      string          `json:"binary_hash"`
-	Metadata        json.RawMessage `json:"metadata"`
+	DeviceID        string                 `json:"device_id"`
+	FirmwareVersion string                 `json:"firmware_version"`
+	BinaryHash      string                 `json:"binary_hash"`
+	Metadata        map[string]interface{} `json:"metadata"`
 }
 
 // NewScanHandler returns a handler for POST /v1/firmware-scans.
-func NewScanHandler(pool *pgxpool.Pool, pub *queue.Publisher) http.HandlerFunc {
+func NewScanHandler(database *mongo.Database, pub *queue.Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req registerScanRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -30,7 +31,7 @@ func NewScanHandler(pool *pgxpool.Pool, pub *queue.Publisher) http.HandlerFunc {
 			return
 		}
 
-		scan, isNew, err := service.RegisterScan(r.Context(), pool, pub, service.RegisterScanRequest{
+		scan, isNew, err := service.RegisterScan(r.Context(), database, pub, service.RegisterScanRequest{
 			DeviceID:        req.DeviceID,
 			FirmwareVersion: req.FirmwareVersion,
 			BinaryHash:      req.BinaryHash,
