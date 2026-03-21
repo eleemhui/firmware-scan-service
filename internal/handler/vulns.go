@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"firmware-scan-service/internal/model"
 	"firmware-scan-service/internal/service"
 
 	"go.mongodb.org/mongo-driver/mongo"
@@ -15,6 +16,14 @@ type vulnsRequest struct {
 
 type vulnsResponse struct {
 	Vulns []string `json:"vulns"`
+}
+
+func cveIDs(vulns []model.Vulnerability) []string {
+	ids := make([]string, len(vulns))
+	for i, v := range vulns {
+		ids[i] = v.CveID
+	}
+	return ids
 }
 
 // NewAddVulnsHandler returns a handler for PATCH /v1/findings/vulns.
@@ -30,23 +39,23 @@ func NewAddVulnsHandler(database *mongo.Database) http.HandlerFunc {
 			return
 		}
 
-		ids, err := service.AddVulns(r.Context(), database, req.Vulns)
+		vulns, err := service.AddVulns(r.Context(), database, req.Vulns)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to add vulns")
 			return
 		}
-		writeJSON(w, http.StatusOK, vulnsResponse{Vulns: ids})
+		writeJSON(w, http.StatusOK, vulnsResponse{Vulns: cveIDs(vulns)})
 	}
 }
 
 // NewListVulnsHandler returns a handler for GET /v1/findings/vulns.
 func NewListVulnsHandler(database *mongo.Database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ids, err := service.ListVulns(r.Context(), database)
+		vulns, err := service.ListVulns(r.Context(), database)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list vulns")
 			return
 		}
-		writeJSON(w, http.StatusOK, vulnsResponse{Vulns: ids})
+		writeJSON(w, http.StatusOK, vulnsResponse{Vulns: cveIDs(vulns)})
 	}
 }

@@ -68,11 +68,11 @@ func makeHandler(database *mongo.Database) func([]byte) error {
 		if err := json.Unmarshal(body, &msg); err != nil {
 			return fmt.Errorf("unmarshal message: %w", err)
 		}
-		return processScan(context.Background(), database, msg.ScanID)
+		return processScan(context.Background(), database, msg.ScanID, msg.DeviceID)
 	}
 }
 
-func processScan(ctx context.Context, database *mongo.Database, scanID string) error {
+func processScan(ctx context.Context, database *mongo.Database, scanID, deviceID string) error {
 	claimed, err := service.ClaimScan(ctx, database, scanID)
 	if err != nil {
 		return fmt.Errorf("claim scan: %w", err)
@@ -87,12 +87,36 @@ func processScan(ctx context.Context, database *mongo.Database, scanID string) e
 	duration := time.Duration(2+rand.Intn(4)) * time.Second
 	time.Sleep(duration)
 
+	// 1 in 10 chance of detecting vulnerabilities.
+	if rand.Intn(10) == 0 {
+		vulns := randomCVEs()
+		if err := service.RecordVulnerabilities(ctx, database, scanID, deviceID, vulns); err != nil {
+			return fmt.Errorf("record vulnerabilities: %w", err)
+		}
+		log.Printf("scan %s: detected vulnerabilities %v", scanID, vulns)
+	}
+
 	if err := service.CompleteScan(ctx, database, scanID); err != nil {
 		return fmt.Errorf("set complete: %w", err)
 	}
 
 	log.Printf("scan %s: complete", scanID)
 	return nil
+}
+
+// randomCVEs returns 1–3 unique CVE IDs randomly selected from CVE-001 to CVE-100.
+func randomCVEs() []string {
+	count := 1 + rand.Intn(3)
+	seen := make(map[int]bool)
+	var vulns []string
+	for len(vulns) < count {
+		n := 1 + rand.Intn(100)
+		if !seen[n] {
+			seen[n] = true
+			vulns = append(vulns, fmt.Sprintf("CVE-%03d", n))
+		}
+	}
+	return vulns
 }
 
 func runWatchdog(ctx context.Context, database *mongo.Database, pub *queue.Publisher) {
