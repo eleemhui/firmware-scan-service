@@ -24,7 +24,7 @@ services:
     environment:
       POSTGRES_USER: firmware
       POSTGRES_PASSWORD: firmware_pass
-      PGDATA: /var/lib/postgresql/data
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_replica_data:/var/lib/postgresql/data
       - ./scripts/start-replica.sh:/start-replica.sh:ro
