@@ -2,7 +2,7 @@ services:
 
   # ── MongoDB primary ───────────────────────────────────────────────────────────
   mongo-primary:
-    image: mongo:7
+    image: mongo:8
     entrypoint: ["/bin/bash", "/scripts/mongod-filter.sh"]
     command: ["--replSet", "rs0", "--bind_ip_all"]
     volumes:
@@ -18,7 +18,7 @@ services:
 
   # ── MongoDB secondary (streaming replication from primary) ───────────────────
   mongo-secondary:
-    image: mongo:7
+    image: mongo:8
     entrypoint: ["/bin/bash", "/scripts/mongod-filter.sh"]
     command: ["--replSet", "rs0", "--bind_ip_all"]
     volumes:
@@ -35,7 +35,7 @@ services:
 
   # ── Replica set initialisation (runs once, then exits) ───────────────────────
   mongo-setup:
-    image: mongo:7
+    image: mongo:8
     volumes:
       - ./scripts/mongo-setup.sh:/mongo-setup.sh:ro
     entrypoint: ["/bin/bash", "/mongo-setup.sh"]
@@ -48,7 +48,7 @@ services:
 
   # ── RabbitMQ ─────────────────────────────────────────────────────────────────
   rabbitmq:
-    image: rabbitmq:3-management
+    image: rabbitmq:4.2.5-management
     ports:
       - "5672:5672"
       - "15672:15672"   # management UI: http://localhost:15672 (guest/guest)
@@ -83,6 +83,8 @@ services:
 
   # ── firmware_analysis_service (worker / queue consumer) ─────────────────────
   worker:
+    deploy:
+      replicas: 3
     build:
       context: .
       dockerfile: Dockerfile.worker

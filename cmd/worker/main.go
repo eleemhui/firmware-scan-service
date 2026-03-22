@@ -78,11 +78,11 @@ func processScan(ctx context.Context, database *mongo.Database, scanID, deviceID
 		return fmt.Errorf("claim scan: %w", err)
 	}
 	if !claimed {
-		log.Printf("scan %s: already claimed or complete, skipping", scanID)
+		log.Printf("scan %s: already claimed or complete, skipping", deviceID)
 		return nil
 	}
 
-	log.Printf("scan %s: claimed, analysing...", scanID)
+	log.Printf("scan %s: claimed, analysing...", deviceID)
 
 	duration := time.Duration(2+rand.Intn(4)) * time.Second
 	time.Sleep(duration)
@@ -93,14 +93,14 @@ func processScan(ctx context.Context, database *mongo.Database, scanID, deviceID
 		if err := service.RecordVulnerabilities(ctx, database, scanID, deviceID, vulns); err != nil {
 			return fmt.Errorf("record vulnerabilities: %w", err)
 		}
-		log.Printf("scan %s: detected vulnerabilities %v", scanID, vulns)
+		log.Printf("scan %s: detected vulnerabilities %v", deviceID, vulns)
 	}
 
 	if err := service.CompleteScan(ctx, database, scanID); err != nil {
 		return fmt.Errorf("set complete: %w", err)
 	}
 
-	log.Printf("scan %s: complete", scanID)
+	log.Printf("scan %s: complete", deviceID)
 	return nil
 }
 
