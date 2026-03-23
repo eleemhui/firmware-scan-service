@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -18,8 +19,6 @@ import (
 
 	"go.mongodb.org/mongo-driver/mongo"
 )
-
-const staleThreshold = 5 * time.Minute
 
 func main() {
 	cfg, err := config.Load()
@@ -43,14 +42,6 @@ func main() {
 		log.Fatalf("connect to rabbitmq: %v", err)
 	}
 	defer consumer.Close()
-
-	pub, err := queue.NewPublisher(cfg.AMQPUrl, cfg.QueueName)
-	if err != nil {
-		log.Fatalf("connect rabbitmq publisher: %v", err)
-	}
-	defer pub.Close()
-
-	go runWatchdog(ctx, database, pub)
 
 	log.Println("firmware_analysis_service started, waiting for jobs...")
 
@@ -87,6 +78,20 @@ func processScan(ctx context.Context, database *mongo.Database, scanID, deviceID
 	duration := time.Duration(2+rand.Intn(4)) * time.Second
 	time.Sleep(duration)
 
+	// .1% chance of simulating a worker crash mid-scan.
+	// Status remains 'started'; the watchdog will re-enqueue after staleThreshold.
+	if rand.Intn(100) == 0 {
+		log.Printf("scan %s: simulated worker crash — exiting", deviceID)
+		os.Exit(1)
+	}
+
+	// 1% chance of simulating a worker failure to complete mid-scan.
+	// Status remains 'started'; the watchdog will re-enqueue after staleThreshold.
+	if rand.Intn(100) == 0 {
+		log.Printf("scan %s: simulated worker scan failure with no crash", deviceID)
+		return nil
+	}
+
 	// 1 in 10 chance of detecting vulnerabilities.
 	if rand.Intn(10) == 0 {
 		vulns := randomCVEs()
@@ -119,28 +124,3 @@ func randomCVEs() []string {
 	return vulns
 }
 
-func runWatchdog(ctx context.Context, database *mongo.Database, pub *queue.Publisher) {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			ids, err := service.RequeueStaleScan(ctx, database, staleThreshold)
-			if err != nil {
-				log.Printf("watchdog: requeue error: %v", err)
-				continue
-			}
-			for _, id := range ids {
-				msg, _ := json.Marshal(model.ScanJobMessage{ScanID: id})
-				if err := pub.Publish(ctx, msg); err != nil {
-					log.Printf("watchdog: publish error for scan %s: %v", id, err)
-				} else {
-					log.Printf("watchdog: re-enqueued stale scan %s", id)
-				}
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}

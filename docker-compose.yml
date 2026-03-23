@@ -1,12 +1,12 @@
 services:
 
-  # ── MongoDB primary ───────────────────────────────────────────────────────────
-  mongo-primary:
+  # ── MongoDB ───────────────────────────────────────────────────────────────────
+  mongodb:
     image: mongo:8
     entrypoint: ["/bin/bash", "/scripts/mongod-filter.sh"]
-    command: ["--replSet", "rs0", "--bind_ip_all"]
+    command: ["--bind_ip_all"]
     volumes:
-      - mongo_primary_data:/data/db
+      - mongo_data:/data/db
       - ./scripts/mongod-filter.sh:/scripts/mongod-filter.sh:ro
     ports:
       - "27017:27017"
@@ -15,36 +15,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
-
-  # ── MongoDB secondary (streaming replication from primary) ───────────────────
-  mongo-secondary:
-    image: mongo:8
-    entrypoint: ["/bin/bash", "/scripts/mongod-filter.sh"]
-    command: ["--replSet", "rs0", "--bind_ip_all"]
-    volumes:
-      - mongo_secondary_data:/data/db
-      - ./scripts/mongod-filter.sh:/scripts/mongod-filter.sh:ro
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-    depends_on:
-      mongo-primary:
-        condition: service_healthy
-
-  # ── Replica set initialisation (runs once, then exits) ───────────────────────
-  mongo-setup:
-    image: mongo:8
-    volumes:
-      - ./scripts/mongo-setup.sh:/mongo-setup.sh:ro
-    entrypoint: ["/bin/bash", "/mongo-setup.sh"]
-    depends_on:
-      mongo-primary:
-        condition: service_healthy
-      mongo-secondary:
-        condition: service_healthy
-    restart: on-failure
 
   # ── RabbitMQ ─────────────────────────────────────────────────────────────────
   rabbitmq:
@@ -69,14 +39,14 @@ services:
     ports:
       - "8080:8080"
     environment:
-      MONGO_URI: mongodb://mongo-primary:27017,mongo-secondary:27017/?replicaSet=rs0&directConnection=false
+      MONGO_URI: mongodb://mongodb:27017/
       MONGO_DB: firmware_db
       AMQP_URL: amqp://guest:guest@rabbitmq:5672/
       PORT: "8080"
       QUEUE_NAME: firmware_scan_jobs
     depends_on:
-      mongo-setup:
-        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     restart: on-failure
@@ -89,17 +59,16 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     environment:
-      MONGO_URI: mongodb://mongo-primary:27017,mongo-secondary:27017/?replicaSet=rs0&directConnection=false
+      MONGO_URI: mongodb://mongodb:27017/
       MONGO_DB: firmware_db
       AMQP_URL: amqp://guest:guest@rabbitmq:5672/
       QUEUE_NAME: firmware_scan_jobs
     depends_on:
-      mongo-setup:
-        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     restart: on-failure
 
 volumes:
-  mongo_primary_data:
-  mongo_secondary_data:
+  mongo_data:

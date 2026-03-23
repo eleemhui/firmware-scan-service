@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -60,6 +61,7 @@ func (p *Publisher) Publish(ctx context.Context, body []byte) error {
 		amqp.Publishing{
 			ContentType:  "application/json",
 			DeliveryMode: amqp.Persistent, // survive broker restart
+			Timestamp:    time.Now(),
 			Body:         body,
 		},
 	)

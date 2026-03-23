@@ -8,10 +8,8 @@ A scalable firmware scan registration platform built in Go. Devices report their
 |---------|-------------|
 | `api` (`cmd/api`) | REST API — accepts scan registrations and CVE reports |
 | `worker` (`cmd/worker`) | Queue consumer — performs firmware analysis, detects vulnerabilities |
-| `mongo-primary` | MongoDB 7 primary — source of truth |
-| `mongo-secondary` | MongoDB 7 secondary — streaming replica set member |
-| `mongo-setup` | One-shot container that initiates the replica set, then exits |
-| `rabbitmq` | RabbitMQ 3 — job queue with management UI |
+| `mongodb` | MongoDB 8 — persistent store for scans and vulnerabilities |
+| `rabbitmq` | RabbitMQ 4.2.5 — job queue with management UI |
 
 ## Prerequisites
 
@@ -26,8 +24,33 @@ cd firmware-scan-service
 # Build and start all services
 docker compose up --build
 
-# Subsequent starts (no rebuild needed)
+# Subsequent starts (if no rebuild needed)
 docker compose up
+
+# Run a quick load test
+pip install aiohttp
+python load_test.py --requests 100
+
+# View one scan record
+docker compose exec mongodb mongosh --quiet firmware_db --eval "
+  db.firmware_scans.aggregate([{ \$limit: 1 },
+    { \$project: {device_id: 1,firmware_version: 1,binary_hash: 1,status: 1,detected_vulns: 1,
+        created_at: 1,updated_at: 1,scan_started_at: 1,scan_completed_at: 1,last_requeued_at: 1,
+        metadata_bytes: { \$bsonSize: '\$metadata' }
+    }}])"
+
+# View detected vulnerabilities, CVEs
+curl http://localhost:8080/v1/findings/vulns
+
+# Check status counts of scan records
+docker compose exec mongodb mongosh --quiet firmware_db --eval "
+  var counts = {};
+  ['scheduled','started','complete','failed'].forEach(s => counts[s] = 0);
+  db.firmware_scans.aggregate([
+    { \$group: { _id: '\$status', scan_count: { \$sum: 1 } } }
+  ]).forEach(r => counts[r._id] = r.scan_count);
+  Object.entries(counts).sort().forEach(([s,c]) => print(s + ': ' + c));
+"
 ```
 
 The API will be available at `http://localhost:8080` once healthy.
@@ -37,7 +60,7 @@ RabbitMQ management UI: `http://localhost:15672` (guest / guest)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MONGO_URI` | _(required)_ | MongoDB connection string (replica set URI) |
+| `MONGO_URI` | _(required)_ | MongoDB connection string |
 | `MONGO_DB` | `firmware_db` | MongoDB database name |
 | `AMQP_URL` | _(required)_ | RabbitMQ connection string |
 | `QUEUE_NAME` | `firmware_scan_jobs` | Queue name for scan jobs |
@@ -96,99 +119,16 @@ curl http://localhost:8080/v1/findings/vulns
 
 ## Scaling
 
-```bash
-# Run 3 API replicas behind Docker's built-in round-robin load balancer
-docker compose up --scale api=3
+Workers can be scaled easily without code changes.
 
+```bash
 # Run 3 workers consuming from the same queue in parallel
 docker compose up --scale worker=3
 ```
-
-Both are safe to scale without code changes.
-
 ---
 
 ## Architecture
 
-```
-HTTP clients
-    │
-    ▼
-firmware_scan_service (cmd/api)
-    ├── MongoDB replica set (primary + secondary)
-    └── RabbitMQ (firmware_scan_jobs queue)
-              │
-              ▼
-    firmware_analysis_service (cmd/worker)
-              │
-              └── MongoDB primary (status + vulnerability updates)
-```
+For architectural decisions, design patterns, and scaling considerations see [architecture.md](architecture.md).
 
-### Duplicate and Repeated Request Handling
 
-**Idempotency key:** `(device_id, binary_hash)`
-
-`RegisterScan` calls `InsertOne` with a unique compound index on `(device_id, binary_hash)`. If MongoDB returns a duplicate key error, the existing document is fetched and returned to the caller. Exactly one queue message is ever published per unique pair.
-
-- New scan → `201 Created` + message enqueued
-- Duplicate → `200 OK` + existing record returned, no message published
-
-### Asynchronous Processing
-
-1. **API** publishes `{"scan_id": "<uuid>", "device_id": "<id>"}` to the durable `firmware_scan_jobs` queue.
-2. **Worker** consumes messages with `prefetch=1`:
-   - Atomically transitions status `scheduled` → `started` via `FindOneAndUpdate`
-   - Simulates analysis (`time.Sleep` 2–5 s)
-   - With 1-in-10 probability, detects 1–3 vulnerabilities (CVE-001 to CVE-100)
-   - If vulnerabilities are detected: updates `firmware_scans.detected_vulns` and upserts each CVE into the `vulnerabilities` collection
-   - Transitions status → `complete`
-   - Acks the message
-
-Messages are `Persistent` and the queue is `durable`. If the worker crashes mid-scan, RabbitMQ redelivers the message. A watchdog goroutine resets scans stuck in `started` for more than 5 minutes back to `scheduled`.
-
-### MongoDB Collections
-
-**`firmware_scans`** — one document per unique `(device_id, binary_hash)` pair
-
-```
-_id              string   UUID
-device_id        string
-firmware_version string
-binary_hash      string
-metadata         object   arbitrary hardware/component data
-status           string   scheduled | started | complete | failed
-detected_vulns   []string CVE IDs found during this scan (omitted if none)
-created_at       date
-updated_at       date
-scan_started_at  date     set when worker claims the scan
-scan_completed_at date    set when worker completes the scan
-
-Index: { device_id: 1, binary_hash: 1 }  unique
-```
-
-**`vulnerabilities`** — one document per CVE ID
-
-```
-_id        string   CVE ID (e.g. "CVE-042")  — unique by being the _id
-device_ids []string devices on which this CVE has been detected
-```
-
-### Behaviour Under Load
-
-| Concern | Design response |
-|---------|----------------|
-| Burst of registrations | `POST /v1/firmware-scans` is one DB write + one queue publish — lightweight |
-| Slow analysis | Decoupled via queue — API returns immediately; workers process at their own pace |
-| Multiple API replicas | Deduplication enforced by MongoDB index, not the application — any number of replicas are safe |
-| Multiple workers | RabbitMQ delivers each message to exactly one consumer; `prefetch=1` distributes evenly |
-| Database failover | MongoDB replica set streams all changes in real time; promote secondary and update `MONGO_URI` to recover |
-
-### Scaling Further
-
-| Change | Benefit |
-|--------|---------|
-| Point reads at the secondary | Offload `GET /v1/findings/vulns` and scan status reads from the primary |
-| Replace classic RabbitMQ queue with a quorum queue | Durable across broker restarts, tolerates broker node failures |
-| Horizontal API scaling | Stateless — add replicas freely |
-| Horizontal worker scaling | Increases analysis throughput linearly |
-| Kafka for very high volume | Consumer groups allow per-partition parallelism for millions of devices |

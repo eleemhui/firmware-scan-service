@@ -151,8 +151,8 @@ func AddVulnsToRegistry(ctx context.Context, database *mongo.Database, cveIDs []
 }
 
 // RequeueStaleScan resets scans stuck in 'started' for longer than staleAfter
-// back to 'scheduled' and returns their IDs so the caller can re-publish them.
-func RequeueStaleScan(ctx context.Context, database *mongo.Database, staleAfter time.Duration) ([]string, error) {
+// back to 'scheduled' and returns their job messages so the caller can re-publish them.
+func RequeueStaleScan(ctx context.Context, database *mongo.Database, staleAfter time.Duration) ([]model.ScanJobMessage, error) {
 	staleTime := time.Now().Add(-staleAfter)
 	coll := database.Collection("firmware_scans")
 
@@ -165,7 +165,7 @@ func RequeueStaleScan(ctx context.Context, database *mongo.Database, staleAfter 
 	}
 	defer cursor.Close(ctx)
 
-	var ids []string
+	var msgs []model.ScanJobMessage
 	for cursor.Next(ctx) {
 		var s model.FirmwareScan
 		if err := cursor.Decode(&s); err != nil {
@@ -178,7 +178,54 @@ func RequeueStaleScan(ctx context.Context, database *mongo.Database, staleAfter 
 		if err != nil {
 			return nil, fmt.Errorf("reset stale scan %s: %w", s.ID, err)
 		}
-		ids = append(ids, s.ID)
+		msgs = append(msgs, model.ScanJobMessage{ScanID: s.ID, DeviceID: s.DeviceID})
 	}
-	return ids, cursor.Err()
+	return msgs, cursor.Err()
+}
+
+// RequeueOrphanedScheduled returns the IDs of scans that have been in 'scheduled'
+// for longer than orphanAfter, indicating their RabbitMQ message was lost.
+// The caller should re-publish these IDs to the queue; ClaimScan's atomic
+// FindOneAndUpdate ensures a duplicate message is a no-op if a worker already claimed it.
+// RequeueOrphanedScheduled finds up to 1000 of the oldest scans stuck in
+// 'scheduled' whose RabbitMQ message was likely lost.  A scan is skipped if
+// it was re-queued by the watchdog within the last hour, preventing repeated
+// hammering of the same entry on every watchdog tick.
+func RequeueOrphanedScheduled(ctx context.Context, database *mongo.Database, orphanAfter time.Duration) ([]model.ScanJobMessage, error) {
+	now := time.Now()
+	coll := database.Collection("firmware_scans")
+
+	cursor, err := coll.Find(ctx,
+		bson.M{
+			"status":     model.StatusScheduled,
+			"created_at": bson.M{"$lt": now.Add(-orphanAfter)},
+			"$or": bson.A{
+				bson.M{"last_requeued_at": bson.M{"$exists": false}},
+				bson.M{"last_requeued_at": bson.M{"$lt": now.Add(-time.Hour)}},
+			},
+		},
+		options.Find().
+			SetSort(bson.D{{Key: "created_at", Value: 1}}). // oldest first
+			SetLimit(1000),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find orphaned scans: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var msgs []model.ScanJobMessage
+	for cursor.Next(ctx) {
+		var s model.FirmwareScan
+		if err := cursor.Decode(&s); err != nil {
+			return nil, fmt.Errorf("decode orphaned scan: %w", err)
+		}
+		if _, err := coll.UpdateOne(ctx,
+			bson.M{"_id": s.ID},
+			bson.M{"$set": bson.M{"last_requeued_at": now}},
+		); err != nil {
+			return nil, fmt.Errorf("stamp last_requeued_at for scan %s: %w", s.ID, err)
+		}
+		msgs = append(msgs, model.ScanJobMessage{ScanID: s.ID, DeviceID: s.DeviceID})
+	}
+	return msgs, cursor.Err()
 }
