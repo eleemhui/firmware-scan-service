@@ -95,7 +95,7 @@ func processScan(ctx context.Context, database *mongo.Database, scanID, deviceID
 	// 1 in 10 chance of detecting vulnerabilities.
 	if rand.Intn(10) == 0 {
 		vulns := randomCVEs()
-		if err := service.RecordVulnerabilities(ctx, database, scanID, deviceID, vulns); err != nil {
+		if err := service.RecordVulnerabilities(ctx, database, scanID, vulns); err != nil {
 			return fmt.Errorf("record vulnerabilities: %w", err)
 		}
 		log.Printf("scan %s: detected vulnerabilities %v", deviceID, vulns)

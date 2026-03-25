@@ -13,7 +13,7 @@ import (
 
 // AddVulns registers CVE IDs via the HTTP API (no device context).
 func AddVulns(ctx context.Context, database *mongo.Database, cveIDs []string) ([]model.Vulnerability, error) {
-	if err := AddVulnsToRegistry(ctx, database, cveIDs, ""); err != nil {
+	if err := AddVulnsToRegistry(ctx, database, cveIDs); err != nil {
 		return nil, fmt.Errorf("add vulns: %w", err)
 	}
 	return ListVulns(ctx, database)

@@ -26,11 +26,9 @@ type FirmwareScan struct {
 }
 
 // Vulnerability is stored in the vulnerabilities MongoDB collection.
-// _id is the CVE ID, ensuring uniqueness. DeviceIDs tracks every device
-// on which this vulnerability has been detected.
+// _id is the CVE ID, ensuring uniqueness.
 type Vulnerability struct {
-	CveID     string   `bson:"_id"        json:"cve_id"`
-	DeviceIDs []string `bson:"device_ids" json:"device_ids"`
+	CveID string `bson:"_id" json:"cve_id"`
 }
 
 type ScanJobMessage struct {

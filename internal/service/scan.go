@@ -117,7 +117,7 @@ func CompleteScan(ctx context.Context, database *mongo.Database, id string) erro
 // RecordVulnerabilities saves detected CVE IDs onto the scan document and
 // upserts each CVE into the vulnerabilities collection, adding deviceID to its
 // device_ids list.
-func RecordVulnerabilities(ctx context.Context, database *mongo.Database, id, deviceID string, cveIDs []string) error {
+func RecordVulnerabilities(ctx context.Context, database *mongo.Database, id string, cveIDs []string) error {
 	_, err := database.Collection("firmware_scans").UpdateOne(
 		ctx,
 		bson.M{"_id": id},
@@ -126,24 +126,19 @@ func RecordVulnerabilities(ctx context.Context, database *mongo.Database, id, de
 	if err != nil {
 		return fmt.Errorf("record vulns on scan: %w", err)
 	}
-	if err := AddVulnsToRegistry(ctx, database, cveIDs, deviceID); err != nil {
+	if err := AddVulnsToRegistry(ctx, database, cveIDs); err != nil {
 		return fmt.Errorf("update vulnerabilities collection: %w", err)
 	}
 	return nil
 }
 
 // AddVulnsToRegistry upserts one document per CVE ID into the vulnerabilities
-// collection. If deviceID is non-empty it is added to that CVE's device_ids set.
-func AddVulnsToRegistry(ctx context.Context, database *mongo.Database, cveIDs []string, deviceID string) error {
+// collection. The CVE ID is the _id, guaranteeing uniqueness.
+func AddVulnsToRegistry(ctx context.Context, database *mongo.Database, cveIDs []string) error {
 	coll := database.Collection("vulnerabilities")
 	for _, cveID := range cveIDs {
-		var update bson.M
-		if deviceID != "" {
-			update = bson.M{"$addToSet": bson.M{"device_ids": deviceID}}
-		} else {
-			update = bson.M{"$setOnInsert": bson.M{"device_ids": []string{}}}
-		}
-		if _, err := coll.UpdateOne(ctx, bson.M{"_id": cveID}, update, options.Update().SetUpsert(true)); err != nil {
+		_, err := coll.InsertOne(ctx, bson.M{"_id": cveID})
+		if err != nil && !mongo.IsDuplicateKeyError(err) {
 			return fmt.Errorf("upsert vuln %s: %w", cveID, err)
 		}
 	}
