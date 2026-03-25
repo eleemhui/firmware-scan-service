@@ -18,13 +18,13 @@
                │                     │              ┌───────────────────────┐
                │                     │              │       MongoDB         │
                │                     │              │                       │
-               ┼─────────────────────┼─────────────►│  ┌─────────────────┐ │
-               │                     │              │  │ firmware_scans  │ │
-               │ PUBLISH (on new)    │ REPUBLISH    │  └─────────────────┘ │
+               ┼─────────────────────┼─────────────►│  ┌─────────────────┐  │
+               │                     │              │  │ firmware_scans  │  │
+               │ PUBLISH (on new)    │ REPUBLISH    │  └─────────────────┘  │
                │                     │ (stale/      │                       │
-               ▼                     ▼  orphan)     │  ┌─────────────────┐ │
-             ┌──────────────────────────┐           │  │ vulnerabilities │ │
-             │       RabbitMQ           │           │  └─────────────────┘ │
+               ▼                     ▼  orphan)     │  ┌─────────────────┐  │
+             ┌──────────────────────────┐           │  │ vulnerabilities │  │
+             │       RabbitMQ           │           │  └─────────────────┘  │
              │  firmware_scan_jobs      │           └───────────────────────┘
              └──────────────────────────┘                      ▲
                        │                                       │
@@ -38,8 +38,8 @@
   │ Scan Frmwr │ │ Scan Frmwr │ │ Scan Frmwr │                 │
   └─────┬──────┘ └─────┬──────┘ └─────┬──────┘                 │
         └──────────────┼──────────────┘                        │
-                       │ UPDATE status & vulnerabilities        │
-                       └────────────────────────────────────────┘
+                       │ UPDATE status & vulnerabilities       │
+                       └───────────────────────────────────────┘
 ```
 
 ## Main Architectural Decisions
@@ -150,6 +150,10 @@ Index: { device_id: 1, binary_hash: 1 }  unique
 ```
 _id        string   CVE ID (e.g. "CVE-042")  — unique by being the _id
 device_ids []string devices on which this CVE has been detected
+
+The cveID is used as the primary key and this will enforce uniqueness. Generating the list of unique CVEs uses the default index to improve performance.
+
+
 ```
 
 ## Behaviour Under High Load
@@ -171,13 +175,14 @@ The two weakest links under extreme load is the MongoDB primary for writes and R
 ### Near-term (10× current load)
 
 - **Add a MongoDB replica set** — promote the single node to a primary with one or more secondaries. Route read-only GET endpoints to a secondary connection pool to offload the primary.
-- **Increase worker replicas** — raise `deploy.replicas` in `docker-compose.yml` or the Kubernetes `Deployment` replica count.
+- **Increase worker replicas** — raise `deploy.replicas` in `docker-compose.yml` or use the Kubernetes `Deployment` replica count.
 - **RabbitMQ quorum queues** — replace the classic queue with a quorum queue (`x-queue-type: quorum`) for stronger HA guarantees across a multi-node RabbitMQ cluster. Use flow control to apply back-pressure on producers.
 
 ### Medium-term (100× current load)
 
 - **MongoDB sharding** — shard the `firmware_scans` collection on `device_id`. Queries and writes for the same device route to the same shard, keeping the unique index local to one shard.
 - **Horizontal RabbitMQ cluster** — run a 3-node RabbitMQ cluster with quorum queues mirrored across all nodes.
+
 
 ### Long-term (fleet-scale, millions of devices)
 

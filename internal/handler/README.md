@@ -17,13 +17,13 @@ Decodes the request body, validates required fields (`device_id`, `firmware_vers
 
 `PATCH /v1/findings/vulns`
 
-Accepts `{"vulns": ["CVE-001", ...]}` and delegates to `service.AddVulns`. Returns the full sorted list of CVE IDs in the registry. Device IDs are not exposed by this endpoint.
+Accepts `{"vulns": ["CVE-001", ...]}` and delegates to `service.AddVulns`. Returns the full sorted list of CVE IDs in the registry.
 
 ### `NewListVulnsHandler(database)`
 
 `GET /v1/findings/vulns`
 
-Returns all CVE IDs in the `vulnerabilities` collection, sorted. Device IDs are not included in the response.
+Returns all CVE IDs in the `vulnerabilities` collection, sorted.
 
 ## Helpers (`helpers.go`)
 

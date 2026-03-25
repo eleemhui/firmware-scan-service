@@ -24,10 +24,6 @@ Each RabbitMQ message carries `{"scan_id": "...", "device_id": "..."}`.
 
 If `processScan` returns an error the message is nacked with `requeue=false` and routed to the dead-letter queue.
 
-## Watchdog
-
-A background goroutine runs every minute and resets scans stuck in `started` for more than 5 minutes back to `scheduled`, then re-publishes their IDs to the queue so they are retried.
-
 ## Scaling
 
 Run multiple worker instances with `docker compose up --scale worker=N`. RabbitMQ delivers each message to exactly one consumer; `prefetch=1` distributes work evenly across all instances.

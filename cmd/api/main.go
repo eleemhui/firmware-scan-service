@@ -96,7 +96,6 @@ func randomWatchdogInterval() time.Duration {
 
 func runWatchdog(ctx context.Context, database *mongo.Database, pub *queue.Publisher) {
 	next := randomWatchdogInterval()
-	log.Printf("watchdog: first check in %s", next)
 	timer := time.NewTimer(next)
 	defer timer.Stop()
 
@@ -128,7 +127,6 @@ func runWatchdog(ctx context.Context, database *mongo.Database, pub *queue.Publi
 			}
 
 			next = randomWatchdogInterval()
-			log.Printf("watchdog: next check in %s", next)
 			timer.Reset(next)
 		case <-ctx.Done():
 			return
