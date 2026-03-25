@@ -1,6 +1,6 @@
 # Firmware Scan Service
 
-A scalable firmware scan registration platform built in Go. Devices report their firmware via REST API; scans are deduplicated, persisted in MongoDB, and processed asynchronously by a worker that consumes from a RabbitMQ queue.
+A scalable firmware scan registration platform built in Go. Devices report their firmware via REST API; scans are deduplicated, persisted in MongoDB, and processed asynchronously by a worker that consumes from a RabbitMQ queue, sends detected CVEs to MongoDB, and updates the result status of the device scan.
 
 ## Services
 
@@ -26,7 +26,13 @@ docker compose up --build
 
 # Subsequent starts (if no rebuild needed)
 docker compose up
+```
 
+The API will be available at `http://localhost:8080` once healthy.
+RabbitMQ management UI: `http://localhost:15672` (guest / guest)
+
+## Useful Commands
+```bash
 # Run a quick load test
 pip install aiohttp
 python load_test.py --requests 100
@@ -51,20 +57,12 @@ docker compose exec mongodb mongosh --quiet firmware_db --eval "
   ]).forEach(r => counts[r._id] = r.scan_count);
   Object.entries(counts).sort().forEach(([s,c]) => print(s + ': ' + c));
 "
+
+# Top 5 CVEs
+docker compose exec mongodb mongosh --quiet firmware_db --eval "
+  db.vulnerabilities.find().sort({detected_count: -1}).limit(5)
+"
 ```
-
-The API will be available at `http://localhost:8080` once healthy.
-RabbitMQ management UI: `http://localhost:15672` (guest / guest)
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MONGO_URI` | _(required)_ | MongoDB connection string |
-| `MONGO_DB` | `firmware_db` | MongoDB database name |
-| `AMQP_URL` | _(required)_ | RabbitMQ connection string |
-| `QUEUE_NAME` | `firmware_scan_jobs` | Queue name for scan jobs |
-| `PORT` | `8080` | API listen port (api only) |
 
 ## API Reference
 

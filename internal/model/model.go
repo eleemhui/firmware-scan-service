@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
 
 const (
 	StatusScheduled = "scheduled"
@@ -10,9 +14,9 @@ const (
 )
 
 // FirmwareScan is stored in the firmware_scans MongoDB collection.
-// _id is a UUID string generated at registration time.
+// _id is a MongoDB ObjectID generated at insert time.
 type FirmwareScan struct {
-	ID              string                 `bson:"_id"                         json:"id"`
+	ID              primitive.ObjectID     `bson:"_id,omitempty"               json:"id"`
 	DeviceID        string                 `bson:"device_id"                   json:"device_id"`
 	FirmwareVersion string                 `bson:"firmware_version"            json:"firmware_version"`
 	BinaryHash      string                 `bson:"binary_hash"                 json:"binary_hash"`
