@@ -28,7 +28,12 @@ type FirmwareScan struct {
 // Vulnerability is stored in the vulnerabilities MongoDB collection.
 // _id is the CVE ID, ensuring uniqueness.
 type Vulnerability struct {
-	CveID string `bson:"_id" json:"cve_id"`
+	CveID           string    `bson:"_id"               json:"cve_id"`
+	FirstDetected   time.Time `bson:"first_detected"    json:"first_detected"`
+	LastDetected    time.Time `bson:"last_detected"     json:"last_detected"`
+	FirstDetectedBy string    `bson:"first_detected_by" json:"first_detected_by"`
+	LastDetectedBy  string    `bson:"last_detected_by"  json:"last_detected_by"`
+	DetectedCount   int64     `bson:"detected_count"    json:"detected_count"`
 }
 
 type ScanJobMessage struct {

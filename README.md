@@ -102,17 +102,20 @@ curl -X PATCH http://localhost:8080/v1/findings/vulns \
   -d '{"vulns": ["CVE-001", "CVE-002"]}'
 ```
 
-Returns the complete deduplicated list of CVE IDs after the call.
+Returns the complete deduplicated list of CVE IDs after the call. CVEs submitted via this endpoint will have empty `first_detected_by` / `last_detected_by` fields since there is no scan context.
 
 ---
 
 ### GET /v1/findings/vulns
 
-Return all unique CVE IDs in the system, sorted.
+Return all CVEs in the system, sorted by CVE ID, including detection metadata.
 
 ```bash
 curl http://localhost:8080/v1/findings/vulns
-# → {"vulns":["CVE-001","CVE-002","CVE-042"]}
+# → {"vulns":[
+#     {"cve_id":"CVE-001","first_detected":"...","last_detected":"...","first_detected_by":"<scanID>","last_detected_by":"<scanID>","detected_count":3},
+#     ...
+#   ]}
 ```
 
 ---

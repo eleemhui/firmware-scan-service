@@ -126,19 +126,37 @@ func RecordVulnerabilities(ctx context.Context, database *mongo.Database, id str
 	if err != nil {
 		return fmt.Errorf("record vulns on scan: %w", err)
 	}
-	if err := AddVulnsToRegistry(ctx, database, cveIDs); err != nil {
+	if err := AddVulnsToRegistry(ctx, database, cveIDs, id); err != nil {
 		return fmt.Errorf("update vulnerabilities collection: %w", err)
 	}
 	return nil
 }
 
 // AddVulnsToRegistry upserts one document per CVE ID into the vulnerabilities
-// collection. The CVE ID is the _id, guaranteeing uniqueness.
-func AddVulnsToRegistry(ctx context.Context, database *mongo.Database, cveIDs []string) error {
+// collection. On first detection, first_detected and first_detected_by are set
+// via $setOnInsert. Every call updates last_detected, last_detected_by, and
+// increments detected_count atomically.
+func AddVulnsToRegistry(ctx context.Context, database *mongo.Database, cveIDs []string, scanID string) error {
 	coll := database.Collection("vulnerabilities")
+	now := time.Now()
 	for _, cveID := range cveIDs {
-		_, err := coll.InsertOne(ctx, bson.M{"_id": cveID})
-		if err != nil && !mongo.IsDuplicateKeyError(err) {
+		_, err := coll.UpdateOne(
+			ctx,
+			bson.M{"_id": cveID},
+			bson.M{
+				"$setOnInsert": bson.M{
+					"first_detected":    now,
+					"first_detected_by": scanID,
+				},
+				"$set": bson.M{
+					"last_detected":    now,
+					"last_detected_by": scanID,
+				},
+				"$inc": bson.M{"detected_count": 1},
+			},
+			options.Update().SetUpsert(true),
+		)
+		if err != nil {
 			return fmt.Errorf("upsert vuln %s: %w", cveID, err)
 		}
 	}

@@ -148,13 +148,15 @@ Index: { device_id: 1, binary_hash: 1 }  unique
 **`vulnerabilities`** — one document per CVE ID
 
 ```
-_id        string   CVE ID (e.g. "CVE-042")  — unique by being the _id
-device_ids []string devices on which this CVE has been detected
-
-The cveID is used as the primary key and this will enforce uniqueness. Generating the list of unique CVEs uses the default index to improve performance.
-
-
+_id               string    CVE ID (e.g. "CVE-042") — unique by being the _id
+first_detected    date      timestamp of first detection
+last_detected     date      timestamp of most recent detection
+first_detected_by string    scan ID that first detected this CVE
+last_detected_by  string    scan ID that most recently detected this CVE
+detected_count    int64     total number of times this CVE has been detected
 ```
+
+The CVE ID is used as `_id`, enforcing uniqueness via MongoDB's built-in primary key index. Each detection performs a single atomic upsert using `$setOnInsert` (first_detected, first_detected_by), `$set` (last_detected, last_detected_by), and `$inc` (detected_count). When submitted via the HTTP API with no scan context, `first_detected_by` and `last_detected_by` are set to an empty string.
 
 ## Behaviour Under High Load
 
