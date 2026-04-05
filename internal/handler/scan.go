@@ -4,10 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"firmware-scan-service/internal/queue"
 	"firmware-scan-service/internal/service"
-
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type registerScanRequest struct {
@@ -18,7 +15,7 @@ type registerScanRequest struct {
 }
 
 // NewScanHandler returns a handler for POST /v1/firmware-scans.
-func NewScanHandler(database *mongo.Database, pub *queue.Publisher) http.HandlerFunc {
+func NewScanHandler(svc service.ScanRegistrar) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req registerScanRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -31,7 +28,7 @@ func NewScanHandler(database *mongo.Database, pub *queue.Publisher) http.Handler
 			return
 		}
 
-		scan, isNew, err := service.RegisterScan(r.Context(), database, pub, service.RegisterScanRequest{
+		scan, isNew, err := svc.RegisterScan(r.Context(), service.RegisterScanRequest{
 			DeviceID:        req.DeviceID,
 			FirmwareVersion: req.FirmwareVersion,
 			BinaryHash:      req.BinaryHash,
