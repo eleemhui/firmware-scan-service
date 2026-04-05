@@ -6,8 +6,6 @@ import (
 
 	"firmware-scan-service/internal/model"
 	"firmware-scan-service/internal/service"
-
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type vulnsRequest struct {
@@ -27,7 +25,7 @@ func cveIDs(vulns []model.Vulnerability) []string {
 }
 
 // NewAddVulnsHandler returns a handler for PATCH /v1/findings/vulns.
-func NewAddVulnsHandler(database *mongo.Database) http.HandlerFunc {
+func NewAddVulnsHandler(svc service.VulnManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req vulnsRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -39,7 +37,7 @@ func NewAddVulnsHandler(database *mongo.Database) http.HandlerFunc {
 			return
 		}
 
-		vulns, err := service.AddVulns(r.Context(), database, req.Vulns)
+		vulns, err := svc.AddVulns(r.Context(), req.Vulns)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to add vulns")
 			return
@@ -49,9 +47,9 @@ func NewAddVulnsHandler(database *mongo.Database) http.HandlerFunc {
 }
 
 // NewListVulnsHandler returns a handler for GET /v1/findings/vulns.
-func NewListVulnsHandler(database *mongo.Database) http.HandlerFunc {
+func NewListVulnsHandler(svc service.VulnManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		vulns, err := service.ListVulns(r.Context(), database)
+		vulns, err := svc.ListVulns(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list vulns")
 			return

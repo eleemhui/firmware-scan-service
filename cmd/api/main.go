@@ -59,9 +59,12 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 
-	r.Post("/v1/firmware-scans", handler.NewScanHandler(database, pub))
-	r.Patch("/v1/findings/vulns", handler.NewAddVulnsHandler(database))
-	r.Get("/v1/findings/vulns", handler.NewListVulnsHandler(database))
+	scanSvc := &service.ScanService{DB: database, Pub: pub}
+	vulnSvc := &service.VulnService{DB: database}
+
+	r.Post("/v1/firmware-scans", handler.NewScanHandler(scanSvc))
+	r.Patch("/v1/findings/vulns", handler.NewAddVulnsHandler(vulnSvc))
+	r.Get("/v1/findings/vulns", handler.NewListVulnsHandler(vulnSvc))
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
