@@ -9,10 +9,8 @@ import (
 	"firmware-scan-service/internal/model"
 	"firmware-scan-service/internal/queue"
 
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type RegisterScanRequest struct {
@@ -31,10 +29,17 @@ func RegisterScan(
 	database *mongo.Database,
 	pub *queue.Publisher,
 	req RegisterScanRequest,
-) (scan *model.FirmwareScan, isNew bool, err error) {
-	coll := database.Collection("firmware_scans")
-	now := time.Now()
+) (*model.FirmwareScan, bool, error) {
+	return registerScan(ctx, NewMongoScanRepo(database), pub, req)
+}
 
+func registerScan(
+	ctx context.Context,
+	repo ScanRepository,
+	pub queue.MessagePublisher,
+	req RegisterScanRequest,
+) (scan *model.FirmwareScan, isNew bool, err error) {
+	now := time.Now()
 	scan = &model.FirmwareScan{
 		DeviceID:        req.DeviceID,
 		FirmwareVersion: req.FirmwareVersion,
@@ -45,10 +50,9 @@ func RegisterScan(
 		UpdatedAt:       now,
 	}
 
-	result, err := coll.InsertOne(ctx, scan)
-	if err == nil {
-		scan.ID = result.InsertedID.(primitive.ObjectID)
-		// New document — publish job to queue.
+	id, insertErr := repo.Insert(ctx, scan)
+	if insertErr == nil {
+		scan.ID = id
 		msg, _ := json.Marshal(model.ScanJobMessage{ScanID: scan.ID.Hex(), DeviceID: scan.DeviceID})
 		if pubErr := pub.Publish(ctx, msg); pubErr != nil {
 			return nil, false, fmt.Errorf("publish scan job: %w", pubErr)
@@ -56,201 +60,118 @@ func RegisterScan(
 		return scan, true, nil
 	}
 
-	if !mongo.IsDuplicateKeyError(err) {
-		return nil, false, fmt.Errorf("insert firmware scan: %w", err)
+	if !mongo.IsDuplicateKeyError(insertErr) {
+		return nil, false, fmt.Errorf("insert firmware scan: %w", insertErr)
 	}
 
-	// Duplicate — fetch and return the existing record.
-	existing := &model.FirmwareScan{}
-	if err := coll.FindOne(ctx, bson.M{
-		"device_id":   req.DeviceID,
-		"binary_hash": req.BinaryHash,
-	}).Decode(existing); err != nil {
+	existing, err := repo.FindByDeviceHash(ctx, req.DeviceID, req.BinaryHash)
+	if err != nil {
 		return nil, false, fmt.Errorf("fetch existing scan: %w", err)
 	}
-
 	return existing, false, nil
 }
 
-// ClaimScan atomically transitions a scan from 'scheduled' → 'started' and
-// records scan_started_at. Returns true only if this caller claimed the scan;
-// false means another worker already claimed it.
+// ClaimScan atomically transitions a scan from 'scheduled' → 'started'.
+// Returns true only if this caller claimed it.
 func ClaimScan(ctx context.Context, database *mongo.Database, id string) (bool, error) {
+	return claimScan(ctx, NewMongoScanRepo(database), id)
+}
+
+func claimScan(ctx context.Context, repo ScanRepository, id string) (bool, error) {
 	oid, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
 		return false, fmt.Errorf("invalid scan id %q: %w", id, err)
 	}
-	now := time.Now()
-	result := database.Collection("firmware_scans").FindOneAndUpdate(
-		ctx,
-		bson.M{"_id": oid, "status": model.StatusScheduled},
-		bson.M{"$set": bson.M{
-			"status":          model.StatusStarted,
-			"scan_started_at": now,
-			"updated_at":      now,
-		}},
-		options.FindOneAndUpdate().SetReturnDocument(options.After),
-	)
-	if result.Err() == mongo.ErrNoDocuments {
-		return false, nil
-	}
-	if result.Err() != nil {
-		return false, fmt.Errorf("claim scan: %w", result.Err())
-	}
-	return true, nil
+	return repo.Claim(ctx, oid)
 }
 
-// CompleteScan transitions a scan to 'complete' and records scan_completed_at.
+// CompleteScan transitions a scan to 'complete'.
 func CompleteScan(ctx context.Context, database *mongo.Database, id string) error {
+	return completeScan(ctx, NewMongoScanRepo(database), id)
+}
+
+func completeScan(ctx context.Context, repo ScanRepository, id string) error {
 	oid, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
 		return fmt.Errorf("invalid scan id %q: %w", id, err)
 	}
-	now := time.Now()
-	_, err = database.Collection("firmware_scans").UpdateOne(
-		ctx,
-		bson.M{"_id": oid},
-		bson.M{"$set": bson.M{
-			"status":            model.StatusComplete,
-			"scan_completed_at": now,
-			"updated_at":        now,
-		}},
-	)
-	if err != nil {
-		return fmt.Errorf("complete scan: %w", err)
-	}
-	return nil
+	return repo.Complete(ctx, oid)
 }
 
 // RecordVulnerabilities saves detected CVE IDs onto the scan document and
-// upserts each CVE into the vulnerabilities collection, adding deviceID to its
-// device_ids list.
+// upserts each CVE into the vulnerabilities collection.
 func RecordVulnerabilities(ctx context.Context, database *mongo.Database, id string, cveIDs []string) error {
+	return recordVulnerabilities(ctx, NewMongoScanRepo(database), NewMongoVulnRepo(database), id, cveIDs)
+}
+
+func recordVulnerabilities(ctx context.Context, scanRepo ScanRepository, vulnRepo VulnRepository, id string, cveIDs []string) error {
 	oid, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
 		return fmt.Errorf("invalid scan id %q: %w", id, err)
 	}
-	_, err = database.Collection("firmware_scans").UpdateOne(
-		ctx,
-		bson.M{"_id": oid},
-		bson.M{"$set": bson.M{"detected_vulns": cveIDs, "updated_at": time.Now()}},
-	)
-	if err != nil {
+	if err := scanRepo.SetVulns(ctx, oid, cveIDs); err != nil {
 		return fmt.Errorf("record vulns on scan: %w", err)
 	}
-	if err := AddVulnsToRegistry(ctx, database, cveIDs, id); err != nil {
+	if err := addVulnsToRegistry(ctx, vulnRepo, cveIDs, id); err != nil {
 		return fmt.Errorf("update vulnerabilities collection: %w", err)
 	}
 	return nil
 }
 
-// AddVulnsToRegistry upserts one document per CVE ID into the vulnerabilities
-// collection. On first detection, first_detected and first_detected_by are set
-// via $setOnInsert. Every call updates last_detected, last_detected_by, and
-// increments detected_count atomically.
+// AddVulnsToRegistry upserts one document per CVE ID into the vulnerabilities collection.
 func AddVulnsToRegistry(ctx context.Context, database *mongo.Database, cveIDs []string, scanID string) error {
-	coll := database.Collection("vulnerabilities")
+	return addVulnsToRegistry(ctx, NewMongoVulnRepo(database), cveIDs, scanID)
+}
+
+func addVulnsToRegistry(ctx context.Context, repo VulnRepository, cveIDs []string, scanID string) error {
 	now := time.Now()
 	for _, cveID := range cveIDs {
-		_, err := coll.UpdateOne(
-			ctx,
-			bson.M{"_id": cveID},
-			bson.M{
-				"$setOnInsert": bson.M{
-					"first_detected":    now,
-					"first_detected_by": scanID,
-				},
-				"$set": bson.M{
-					"last_detected":    now,
-					"last_detected_by": scanID,
-				},
-				"$inc": bson.M{"detected_count": 1},
-			},
-			options.Update().SetUpsert(true),
-		)
-		if err != nil {
+		if err := repo.UpsertCVE(ctx, cveID, scanID, now); err != nil {
 			return fmt.Errorf("upsert vuln %s: %w", cveID, err)
 		}
 	}
 	return nil
 }
 
-// RequeueStaleScan resets scans stuck in 'started' for longer than staleAfter
-// back to 'scheduled' and returns their job messages so the caller can re-publish them.
+// RequeueStaleScan resets scans stuck in 'started' for longer than staleAfter.
 func RequeueStaleScan(ctx context.Context, database *mongo.Database, staleAfter time.Duration) ([]model.ScanJobMessage, error) {
-	staleTime := time.Now().Add(-staleAfter)
-	coll := database.Collection("firmware_scans")
+	return requeueStaleScan(ctx, NewMongoScanRepo(database), staleAfter)
+}
 
-	cursor, err := coll.Find(ctx, bson.M{
-		"status":     model.StatusStarted,
-		"updated_at": bson.M{"$lt": staleTime},
-	})
+func requeueStaleScan(ctx context.Context, repo ScanRepository, staleAfter time.Duration) ([]model.ScanJobMessage, error) {
+	scans, err := repo.FindStale(ctx, time.Now().Add(-staleAfter))
 	if err != nil {
 		return nil, fmt.Errorf("find stale scans: %w", err)
 	}
-	defer cursor.Close(ctx)
-
 	var msgs []model.ScanJobMessage
-	for cursor.Next(ctx) {
-		var s model.FirmwareScan
-		if err := cursor.Decode(&s); err != nil {
-			return nil, fmt.Errorf("decode stale scan: %w", err)
-		}
-		_, err := coll.UpdateOne(ctx,
-			bson.M{"_id": s.ID, "status": model.StatusStarted},
-			bson.M{"$set": bson.M{"status": model.StatusScheduled, "updated_at": time.Now()}},
-		)
-		if err != nil {
+	for _, s := range scans {
+		if err := repo.ResetToScheduled(ctx, s.ID); err != nil {
 			return nil, fmt.Errorf("reset stale scan %s: %w", s.ID, err)
 		}
 		msgs = append(msgs, model.ScanJobMessage{ScanID: s.ID.Hex(), DeviceID: s.DeviceID})
 	}
-	return msgs, cursor.Err()
+	return msgs, nil
 }
 
-// RequeueOrphanedScheduled returns the IDs of scans that have been in 'scheduled'
-// for longer than orphanAfter, indicating their RabbitMQ message was lost.
-// The caller should re-publish these IDs to the queue; ClaimScan's atomic
-// FindOneAndUpdate ensures a duplicate message is a no-op if a worker already claimed it.
-// RequeueOrphanedScheduled finds up to 1000 of the oldest scans stuck in
-// 'scheduled' whose RabbitMQ message was likely lost.  A scan is skipped if
-// it was re-queued by the watchdog within the last hour, preventing repeated
-// hammering of the same entry on every watchdog tick.
+// RequeueOrphanedScheduled re-publishes scans stuck in 'scheduled' whose queue
+// message was likely lost. Caps at 1000 oldest entries, skips those requeued
+// within the last hour.
 func RequeueOrphanedScheduled(ctx context.Context, database *mongo.Database, orphanAfter time.Duration) ([]model.ScanJobMessage, error) {
-	now := time.Now()
-	coll := database.Collection("firmware_scans")
+	return requeueOrphanedScheduled(ctx, NewMongoScanRepo(database), orphanAfter)
+}
 
-	cursor, err := coll.Find(ctx,
-		bson.M{
-			"status":     model.StatusScheduled,
-			"created_at": bson.M{"$lt": now.Add(-orphanAfter)},
-			"$or": bson.A{
-				bson.M{"last_requeued_at": bson.M{"$exists": false}},
-				bson.M{"last_requeued_at": bson.M{"$lt": now.Add(-time.Hour)}},
-			},
-		},
-		options.Find().
-			SetSort(bson.D{{Key: "created_at", Value: 1}}). // oldest first
-			SetLimit(1000),
-	)
+func requeueOrphanedScheduled(ctx context.Context, repo ScanRepository, orphanAfter time.Duration) ([]model.ScanJobMessage, error) {
+	now := time.Now()
+	scans, err := repo.FindOrphaned(ctx, now.Add(-orphanAfter), now.Add(-time.Hour), 1000)
 	if err != nil {
 		return nil, fmt.Errorf("find orphaned scans: %w", err)
 	}
-	defer cursor.Close(ctx)
-
 	var msgs []model.ScanJobMessage
-	for cursor.Next(ctx) {
-		var s model.FirmwareScan
-		if err := cursor.Decode(&s); err != nil {
-			return nil, fmt.Errorf("decode orphaned scan: %w", err)
-		}
-		if _, err := coll.UpdateOne(ctx,
-			bson.M{"_id": s.ID},
-			bson.M{"$set": bson.M{"last_requeued_at": now}},
-		); err != nil {
+	for _, s := range scans {
+		if err := repo.StampRequeued(ctx, s.ID, now); err != nil {
 			return nil, fmt.Errorf("stamp last_requeued_at for scan %s: %w", s.ID, err)
 		}
 		msgs = append(msgs, model.ScanJobMessage{ScanID: s.ID.Hex(), DeviceID: s.DeviceID})
 	}
-	return msgs, cursor.Err()
+	return msgs, nil
 }
